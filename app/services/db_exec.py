@@ -1,0 +1,1 @@
+# Runs sql against duck db -> returns rows 

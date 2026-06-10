@@ -1,0 +1,1 @@
+# BarchartWidget, LineChartWidget, PieChartWidget - A2UI - schema 
