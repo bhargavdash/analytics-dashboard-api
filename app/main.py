@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import stream
+from app.api import stream, schema
 
 app = FastAPI(title="Analytics Dashboard ADK", version="0.1.0")
 
@@ -17,5 +17,6 @@ async def health():
     return {"status": "ok", "service": "adk"}
 
 app.include_router(stream.router, prefix="/api/v1")
+app.include_router(schema.router, prefix="/api/v1")
 
 
