@@ -11,6 +11,10 @@ wheels/
 
 .env
 
+# Generated databases (recreated on boot / via seed scripts — never commit)
 *.duckdb
+*.db
+*.sqlite
+*.sqlite3
 
 .vscode

@@ -197,6 +197,20 @@ def get_recent_turns(conversation_id: str, limit: int = 4) -> list[dict]:
         con.close()
 
 
+def rename_conversation(conversation_id: str, title: str) -> bool:
+    title = (title[:80] + "…") if len(title) > 80 else title
+    con = _connect()
+    try:
+        cur = con.execute(
+            "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
+            (title, _now(), conversation_id),
+        )
+        con.commit()
+        return cur.rowcount > 0
+    finally:
+        con.close()
+
+
 def delete_conversation(conversation_id: str) -> bool:
     con = _connect()
     try:
