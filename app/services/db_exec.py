@@ -3,18 +3,24 @@ import datetime
 from decimal import Decimal
 import duckdb
 from app.models.widgets import DataRow
+from app.services.sql_safety import validate_sql, enforce_limit
 
 DB_PATH = "analytics.duckdb"
+QUERY_TIMEOUT_S = 20.0
+
+
+class QueryExecutionError(Exception):
+    """Any failure running generated SQL (unsafe, syntax, runtime, timeout).
+
+    Collapsing these into one type lets the orchestrator catch a single thing and
+    drive the self-repair loop (feed the message back to the model)."""
 
 
 def _coerce(value):
     """Normalize DB-native types into JSON-safe primitives.
 
-    DuckDB returns DECIMAL as decimal.Decimal and DATE/TIMESTAMP as
-    datetime objects — neither is JSON-serializable, and both violate the
-    DataRow contract (str | int | float | None). This is the boundary where
-    raw DB types enter the system, so coerce here once.
-    """
+    DuckDB returns DECIMAL as decimal.Decimal and DATE/TIMESTAMP as datetime objects —
+    neither is JSON-serializable, and both violate the DataRow contract."""
     if isinstance(value, Decimal):
         return float(value)
     if isinstance(value, (datetime.date, datetime.datetime)):
@@ -23,9 +29,6 @@ def _coerce(value):
 
 
 def _run_query(sql: str) -> list[DataRow]:
-    if not sql.strip().upper().startswith("SELECT"):
-        raise ValueError(f"Only SELECT queries allowed. Got: {sql[:60]}")
-
     con = duckdb.connect(DB_PATH, read_only=True)
     try:
         result = con.execute(sql)
@@ -40,4 +43,17 @@ def _run_query(sql: str) -> list[DataRow]:
 
 
 async def run_db_query(sql: str) -> list[DataRow]:
-    return await asyncio.to_thread(_run_query, sql)
+    # Guardrails first (allowlist + statement check + hard LIMIT), then execute.
+    try:
+        safe_sql = enforce_limit(validate_sql(sql))
+    except ValueError as e:
+        raise QueryExecutionError(f"unsafe SQL: {e}")
+
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_run_query, safe_sql), timeout=QUERY_TIMEOUT_S
+        )
+    except asyncio.TimeoutError:
+        raise QueryExecutionError(f"query timed out after {QUERY_TIMEOUT_S:.0f}s")
+    except duckdb.Error as e:
+        raise QueryExecutionError(str(e))

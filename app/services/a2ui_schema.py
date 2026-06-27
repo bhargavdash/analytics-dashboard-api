@@ -9,6 +9,7 @@ MAX_RETRIES = 3
 client = AsyncOpenAI(
     api_key=os.getenv("GROQ_API_KEY"),
     base_url="https://api.groq.com/openai/v1",
+    timeout=30.0,
 )
 
 # The contract we give the LLM: widget types, exact field names, span rules, color palette.

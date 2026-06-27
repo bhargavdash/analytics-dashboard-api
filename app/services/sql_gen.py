@@ -1,35 +1,31 @@
 import os
 import re
 from openai import AsyncOpenAI
+from app.services.schema_card import get_schema_card
 
 client = AsyncOpenAI(
     api_key=os.getenv("GROQ_API_KEY"),
     base_url="https://api.groq.com/openai/v1",
+    timeout=30.0,
 )
 
-SCHEMA = """
-  orders(order_id, customer_id, product_id, region, sales_rep_id, order_date DATE, amount DECIMAL, status)
-  products(product_id, name, category, unit_price DECIMAL)
-  customers(customer_id, name, segment, country)
-  sales_reps(sales_rep_id, name, region, team)
-"""
 
-SYSTEM_PROMPT = f"""You are a SQL expert. Given a business question, write a single DuckDB SQL SELECT query.
+def _system_prompt() -> str:
+    return f"""You are a SQL expert. Given a business question, write a single DuckDB SQL SELECT query.
 
 Database schema:
-{SCHEMA}
+{get_schema_card()}
 
 Rules:
 - Output ONLY the SQL query. No explanation, no markdown, no code fences.
-- Only SELECT statements. Never INSERT, UPDATE, DELETE, DROP.
-- Use DuckDB date syntax (DATE_TRUNC, STRFTIME) for date operations.
+- Only SELECT statements (a CTE with WITH is fine). Never INSERT, UPDATE, DELETE, DROP.
+- Use DuckDB date syntax (date_trunc, strftime) for date operations.
+- Use the exact categorical values listed in the schema.
 - Always include LIMIT 500.
 - Join tables when needed."""
 
 
 def _history_block(history: list[dict] | None) -> str:
-    """Render prior turns so the model can resolve follow-up references
-    like "break that down by region" or "now just the top 3"."""
     if not history:
         return ""
     lines = ["\n\nEarlier in this conversation (oldest first):"]
@@ -44,12 +40,26 @@ def _history_block(history: list[dict] | None) -> str:
     return "\n".join(lines)
 
 
-async def generate_sql(question: str, history: list[dict] | None = None) -> str:
-    user_content = question + _history_block(history)
+def _repair_block(previous_sql: str | None, error: str | None) -> str:
+    if not error:
+        return ""
+    return (
+        f"\n\nYour previous SQL failed when executed:\n{previous_sql}\n\n"
+        f"Error: {error}\n\nFix the query and output ONLY the corrected SQL."
+    )
+
+
+async def generate_sql(
+    question: str,
+    history: list[dict] | None = None,
+    previous_sql: str | None = None,
+    error_feedback: str | None = None,
+) -> str:
+    user_content = question + _history_block(history) + _repair_block(previous_sql, error_feedback)
     response = await client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": _system_prompt()},
             {"role": "user", "content": user_content},
         ],
         temperature=0.1,
