@@ -113,3 +113,9 @@ Widget = Annotated[
 class DashboardSchema(BaseModel):
     summary: str
     widgets: list[Widget]
+
+
+# Widgets only — the prose insight is now streamed separately as free text, so the
+# structured (JSON-mode, validated) call returns just the chart spec.
+class WidgetSchema(BaseModel):
+    widgets: list[Widget]

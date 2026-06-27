@@ -3,7 +3,7 @@ import json
 import logging
 from typing import AsyncIterator
 from app.services.router import classify
-from app.services.a2ui_schema import generate_dashboard_schema
+from app.services.a2ui_schema import generate_widgets, stream_insight
 from app.services.sql_gen import generate_sql
 from app.services.db_exec import run_db_query, QueryExecutionError
 from app.db import app_store
@@ -90,15 +90,25 @@ async def run_query(question: str, conversation_id: str | None = None) -> AsyncI
             yield _emit("done", {"message": "Complete"})
             return
 
-        # --- CHARTS ---
-        yield reason("a2ui_schema", "Generating dashboard schema…")
-        schema = await generate_dashboard_schema(question, rows)
-        widgets = [w.model_dump() for w in schema.widgets]
+        # --- INSIGHT (streamed prose) ---
+        # Stream the interpretation token-by-token so it materializes in the UI instead
+        # of popping in whole. The joined text is the canonical summary we persist.
+        yield reason("a2ui_schema", "Interpreting the results…")
+        summary_parts: list[str] = []
+        async for token in stream_insight(question, rows):
+            summary_parts.append(token)
+            yield _emit("summary_token", {"token": token})
+        summary = "".join(summary_parts).strip()
+
+        # --- CHARTS (structured) ---
+        yield reason("a2ui_schema", "Designing the charts…")
+        widgets = [w.model_dump() for w in await generate_widgets(question, rows)]
 
         await asyncio.to_thread(
-            app_store.add_turn, conversation_id, question, sql, schema.summary, widgets, events
+            app_store.add_turn, conversation_id, question, sql, summary, widgets, events
         )
-        yield _emit("dashboard", schema.model_dump())
+        # Summary already streamed via summary_token; this event only carries the charts.
+        yield _emit("dashboard", {"widgets": widgets})
         yield _emit("done", {"message": "Complete"})
 
     except Exception as e:
