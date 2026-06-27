@@ -10,7 +10,7 @@ router = APIRouter()
 @router.post("/query")
 async def query_stream(request: QueryRequest):
     return StreamingResponse(
-        run_query(request.question),
+        run_query(request.question, request.conversation_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

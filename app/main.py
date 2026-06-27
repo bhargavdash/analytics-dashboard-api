@@ -4,9 +4,13 @@ load_dotenv()
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import stream, schema
+from app.api import stream, schema, conversations
+from app.db.app_store import init_db
 
 app = FastAPI(title="Analytics Dashboard ADK", version="0.1.0")
+
+# Create the app-state tables (conversations/turns) on boot if they don't exist.
+init_db()
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,5 +26,6 @@ async def health():
 
 app.include_router(stream.router, prefix="/api/v1")
 app.include_router(schema.router, prefix="/api/v1")
+app.include_router(conversations.router, prefix="/api/v1")
 
 
