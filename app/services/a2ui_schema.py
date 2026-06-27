@@ -1,11 +1,14 @@
 import os
 import json
-from openai import OpenAI
+from pydantic import ValidationError
+from openai import AsyncOpenAI
 from app.models.widgets import DashboardSchema, DataRow
 
-client = OpenAI(
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    base_url="https://openrouter.ai/api/v1",
+MAX_RETRIES = 3
+
+client = AsyncOpenAI(
+    api_key=os.getenv("GROQ_API_KEY"),
+    base_url="https://api.groq.com/openai/v1",
 )
 
 # The contract we give the LLM: widget types, exact field names, span rules, color palette.
@@ -44,17 +47,26 @@ Rules:
 
 
 async def generate_dashboard_schema(question: str, rows: list[DataRow]) -> DashboardSchema:
-    response = client.chat.completions.create(
-        model="anthropic/claude-haiku-4-5",
+    user_content = f"Question: {question}\n\nSQL rows: \n{json.dumps(rows, indent=2)}"
+    error_feedback = ""
+
+    for attempt in range(MAX_RETRIES):
+      response = await client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Question: {question}\n\nSQL rows:\n{json.dumps(rows, indent=2)}"},
+          {"role": "system", "content": SYSTEM_PROMPT},
+          {"role": "user", "content": user_content + error_feedback},
         ],
         response_format={"type": "json_object"},
         temperature=0.2,
-    )
+      )
 
-    raw = response.choices[0].message.content
-    data = json.loads(raw)
-    # Pydantic validates and narrows — raises ValidationError if LLM emitted bad schema
-    return DashboardSchema.model_validate(data)
+      raw = response.choices[0].message.content
+
+      try: 
+        data = json.loads(raw)
+        return DashboardSchema.model_validate(data)
+      except (json.JSONDecodeError, ValidationError) as e:
+        if attempt == MAX_RETRIES - 1:
+          raise 
+        error_feedback = f"\n\nYour previous response failed validation: {str(e)}\nFix it and try again. Output ONLY valid JSON."
