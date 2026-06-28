@@ -11,9 +11,9 @@ RUN uv sync --frozen --no-dev --no-install-project
 # Copy application source
 COPY app/ ./app/
 
-# Copy the pre-seeded demo warehouse into the image.
+# Generate the pre-seeded demo warehouse during the build.
 # start.sh copies this to DATA_DIR on first boot (if the volume is empty).
-COPY db/analytics.duckdb ./db/analytics.duckdb
+RUN uv run python -m app.db.seed
 
 COPY start.sh ./start.sh
 RUN chmod +x ./start.sh
