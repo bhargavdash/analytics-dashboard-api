@@ -1,0 +1,5 @@
+# Dev/test-only dependencies — kept separate from prod (pyproject.toml).
+# Install:  uv pip install -r requirements-dev.txt
+pytest>=9.0.3
+pytest-asyncio>=1.0.0
+httpx>=0.28.0

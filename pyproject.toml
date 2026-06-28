@@ -17,5 +17,12 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "pytest-asyncio>=1.0.0",
+    "httpx>=0.28.0",
     "ruff>=0.15.16",
 ]
+
+# Run the suite with:  pytest tests/ -v   (from the analytics-dashboard-api dir)
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
