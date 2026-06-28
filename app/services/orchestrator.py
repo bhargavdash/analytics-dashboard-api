@@ -6,6 +6,8 @@ from app.services.router import classify
 from app.services.a2ui_schema import generate_widgets, stream_insight
 from app.services.sql_gen import generate_sql
 from app.services.db_exec import run_db_query, QueryExecutionError
+from app.services.schema_card import resolve_schema_card
+from app.db.connection import WAREHOUSE_DB_PATH, DATASETS_DB_PATH
 from app.db import app_store
 
 logger = logging.getLogger("helix")
@@ -17,12 +19,19 @@ def _emit(event_type: str, payload: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(payload)}\n\n"
 
 
-async def run_query(question: str, conversation_id: str | None = None) -> AsyncIterator[str]:
+async def run_query(
+    question: str,
+    conversation_id: str | None = None,
+    dataset_id: str | None = None,
+) -> AsyncIterator[str]:
     """Route the message, then run only the steps that intent requires.
 
     Non-data intents (greeting/about_data/clarify/out_of_scope) get a text `message`
     reply. A data question runs sql_gen → (validate+repair) → db_exec → a2ui. Each
     branch persists a turn; a thin try/except emits an in-band error if anything escapes.
+
+    `dataset_id` scopes the thread: it comes from the request for a new conversation and
+    from the stored conversation for follow-ups (None = built-in demo warehouse).
     """
     events: list[dict] = []
 
@@ -33,17 +42,30 @@ async def run_query(question: str, conversation_id: str | None = None) -> AsyncI
     try:
         # New conversation on first message; follow-ups reuse the id + load history.
         if conversation_id is None:
-            conversation_id = await asyncio.to_thread(app_store.create_conversation, question)
             history: list[dict] = []
+            dataset = await asyncio.to_thread(app_store.get_dataset, dataset_id) if dataset_id else None
+            label = dataset["name"] if dataset else "sales"
+            conversation_id = await asyncio.to_thread(
+                app_store.create_conversation, question, dataset_id, label
+            )
         else:
             history = await asyncio.to_thread(app_store.get_recent_turns, conversation_id)
+            dataset_id = await asyncio.to_thread(
+                app_store.get_conversation_dataset_id, conversation_id
+            )
+            dataset = await asyncio.to_thread(app_store.get_dataset, dataset_id) if dataset_id else None
+
+        # Resolve the grounded schema card once and inject it into the router + sql_gen.
+        # The dataset also decides which DuckDB file the SQL runs against.
+        schema_card = await asyncio.to_thread(resolve_schema_card, dataset)
+        db_path = str(DATASETS_DB_PATH if dataset else WAREHOUSE_DB_PATH)
 
         yield _emit("meta", {"conversation_id": conversation_id, "is_followup": bool(history)})
 
         # --- ROUTE ---
         yield reason("route", "Understanding your question…")
-        decision = await classify(question, history)
-        logger.info("intent=%s q=%r", decision.intent, question)
+        decision = await classify(question, history, schema_card)
+        logger.info("intent=%s dataset=%s q=%r", decision.intent, dataset_id, question)
 
         # --- NON-DATA BRANCHES → conversational reply ---
         if decision.intent != "data_question":
@@ -63,12 +85,12 @@ async def run_query(question: str, conversation_id: str | None = None) -> AsyncI
         error_feedback: str | None = None
 
         for attempt in range(MAX_SQL_ATTEMPTS):
-            sql = await generate_sql(question, history, previous_sql, error_feedback)
+            sql = await generate_sql(question, history, schema_card, previous_sql, error_feedback)
             yield reason("sql_gen", f"SQL ready: {sql}")
 
             yield reason("db_exec", "Running query on DuckDB…")
             try:
-                rows = await run_db_query(sql)
+                rows = await run_db_query(sql, db_path)
                 break
             except QueryExecutionError as e:
                 logger.warning("sql attempt %d failed: %s", attempt + 1, e)

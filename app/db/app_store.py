@@ -10,9 +10,9 @@ import json
 import sqlite3
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
-DB_PATH = Path(__file__).parent.parent.parent / "app_state.db"
+# Path resolved centrally (honors DATA_DIR for deploys with a persistent volume).
+from app.db.connection import APP_STATE_DB_PATH as DB_PATH
 
 
 def _now() -> str:
@@ -55,14 +55,34 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_turns_conversation
                 ON turns(conversation_id, seq);
+
+            -- Phase B: user-uploaded datasets. One row per ingested file; the actual
+            -- columnar data lives in analytics.duckdb under `table_name`.
+            CREATE TABLE IF NOT EXISTS datasets (
+                id               TEXT PRIMARY KEY,
+                name             TEXT NOT NULL,          -- original filename (display)
+                source           TEXT NOT NULL,          -- 'csv' | 'xlsx'
+                table_name       TEXT NOT NULL UNIQUE,   -- sanitized DuckDB table
+                columns_json     TEXT NOT NULL DEFAULT '[]',
+                sample_json      TEXT NOT NULL DEFAULT '[]',
+                suggestions_json TEXT NOT NULL DEFAULT '[]',
+                row_count        INTEGER NOT NULL DEFAULT 0,
+                created_at       TEXT NOT NULL
+            );
             """
         )
+        # Migrate: add conversations.dataset_id (null = built-in demo dataset) if absent.
+        cols = {r["name"] for r in con.execute("PRAGMA table_info(conversations)").fetchall()}
+        if "dataset_id" not in cols:
+            con.execute("ALTER TABLE conversations ADD COLUMN dataset_id TEXT")
         con.commit()
     finally:
         con.close()
 
 
-def create_conversation(title: str, dataset: str = "sales") -> str:
+def create_conversation(
+    title: str, dataset_id: str | None = None, dataset_label: str = "sales"
+) -> str:
     cid = str(uuid.uuid4())
     now = _now()
     # Title is the first question, trimmed for the sidebar.
@@ -70,9 +90,9 @@ def create_conversation(title: str, dataset: str = "sales") -> str:
     con = _connect()
     try:
         con.execute(
-            "INSERT INTO conversations (id, title, dataset, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (cid, title, dataset, now, now),
+            "INSERT INTO conversations (id, title, dataset, dataset_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (cid, title, dataset_label, dataset_id, now, now),
         )
         con.commit()
     finally:
@@ -175,6 +195,7 @@ def get_conversation(conversation_id: str) -> dict | None:
             "id": c["id"],
             "title": c["title"],
             "dataset": c["dataset"],
+            "dataset_id": c["dataset_id"],
             "created_at": c["created_at"],
             "updated_at": c["updated_at"],
             "turns": [_turn_to_dict(t) for t in turns],
@@ -217,5 +238,106 @@ def delete_conversation(conversation_id: str) -> bool:
         cur = con.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
         con.commit()
         return cur.rowcount > 0
+    finally:
+        con.close()
+
+
+def get_conversation_dataset_id(conversation_id: str) -> str | None:
+    """Which dataset a thread is scoped to (None = built-in demo)."""
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT dataset_id FROM conversations WHERE id = ?", (conversation_id,)
+        ).fetchone()
+        return row["dataset_id"] if row else None
+    finally:
+        con.close()
+
+
+# --- Datasets (Phase B) ---
+
+def _dataset_to_dict(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "source": row["source"],
+        "table_name": row["table_name"],
+        "columns": json.loads(row["columns_json"]),
+        "sample": json.loads(row["sample_json"]),
+        "suggestions": json.loads(row["suggestions_json"]),
+        "row_count": row["row_count"],
+        "created_at": row["created_at"],
+    }
+
+
+def create_dataset(
+    name: str,
+    source: str,
+    table_name: str,
+    columns: list,
+    sample: list,
+    suggestions: list,
+    row_count: int,
+) -> str:
+    did = str(uuid.uuid4())
+    con = _connect()
+    try:
+        con.execute(
+            "INSERT INTO datasets "
+            "(id, name, source, table_name, columns_json, sample_json, suggestions_json, row_count, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                did,
+                name,
+                source,
+                table_name,
+                json.dumps(columns),
+                json.dumps(sample),
+                json.dumps(suggestions),
+                row_count,
+                _now(),
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return did
+
+
+def list_datasets() -> list[dict]:
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT * FROM datasets ORDER BY created_at DESC"
+        ).fetchall()
+        return [_dataset_to_dict(r) for r in rows]
+    finally:
+        con.close()
+
+
+def get_dataset(dataset_id: str) -> dict | None:
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT * FROM datasets WHERE id = ?", (dataset_id,)
+        ).fetchone()
+        return _dataset_to_dict(row) if row else None
+    finally:
+        con.close()
+
+
+def delete_dataset(dataset_id: str) -> dict | None:
+    """Delete the dataset row and return it (so the caller can drop the DuckDB table)."""
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT * FROM datasets WHERE id = ?", (dataset_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        rec = _dataset_to_dict(row)
+        con.execute("DELETE FROM datasets WHERE id = ?", (dataset_id,))
+        con.commit()
+        return rec
     finally:
         con.close()

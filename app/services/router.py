@@ -10,7 +10,6 @@ import json
 from typing import Literal
 from pydantic import BaseModel, ValidationError
 from openai import AsyncOpenAI
-from app.services.schema_card import get_schema_card
 
 client = AsyncOpenAI(
     api_key=os.getenv("GROQ_API_KEY"),
@@ -33,19 +32,19 @@ class RouterDecision(BaseModel):
     reply: str | None = None
 
 
-def _system_prompt() -> str:
+def _system_prompt(schema_card: str) -> str:
     return f"""You are the router for "Helix", a data analytics assistant. Classify the
 user's latest message into exactly one intent and respond as JSON.
 
 The data you can analyze:
-{get_schema_card()}
+{schema_card}
 
 Respond as JSON: {{"intent": "<intent>", "reply": "<text or null>"}}
 
 Intents:
 - data_question: answerable by querying the data above. Set reply to null.
 - greeting: hi/hello/thanks/small talk. reply = a short, warm greeting that invites a
-  data question (mention you analyze the sales data).
+  data question (refer to the dataset above, not a generic one).
 - about_data: asking what data/tables/columns/values exist. reply = answer concisely
   from the schema above.
 - clarification_needed: a data request too vague to query (missing metric, timeframe,
@@ -67,12 +66,14 @@ def _history_block(history: list[dict] | None) -> str:
     return "\n".join(lines) + "\n\n"
 
 
-async def classify(question: str, history: list[dict] | None = None) -> RouterDecision:
+async def classify(
+    question: str, history: list[dict] | None = None, schema_card: str = ""
+) -> RouterDecision:
     user_content = _history_block(history) + f"Latest message: {question}"
     response = await client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[
-            {"role": "system", "content": _system_prompt()},
+            {"role": "system", "content": _system_prompt(schema_card)},
             {"role": "user", "content": user_content},
         ],
         response_format={"type": "json_object"},

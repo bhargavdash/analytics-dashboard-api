@@ -1,7 +1,6 @@
 import os
 import re
 from openai import AsyncOpenAI
-from app.services.schema_card import get_schema_card
 
 client = AsyncOpenAI(
     api_key=os.getenv("GROQ_API_KEY"),
@@ -10,11 +9,11 @@ client = AsyncOpenAI(
 )
 
 
-def _system_prompt() -> str:
+def _system_prompt(schema_card: str) -> str:
     return f"""You are a SQL expert. Given a business question, write a single DuckDB SQL SELECT query.
 
 Database schema:
-{get_schema_card()}
+{schema_card}
 
 Rules:
 - Output ONLY the SQL query. No explanation, no markdown, no code fences.
@@ -52,6 +51,7 @@ def _repair_block(previous_sql: str | None, error: str | None) -> str:
 async def generate_sql(
     question: str,
     history: list[dict] | None = None,
+    schema_card: str = "",
     previous_sql: str | None = None,
     error_feedback: str | None = None,
 ) -> str:
@@ -59,7 +59,7 @@ async def generate_sql(
     response = await client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[
-            {"role": "system", "content": _system_prompt()},
+            {"role": "system", "content": _system_prompt(schema_card)},
             {"role": "user", "content": user_content},
         ],
         temperature=0.1,

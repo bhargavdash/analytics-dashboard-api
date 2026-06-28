@@ -34,6 +34,7 @@ class ConversationDetail(BaseModel):
     id: str
     title: str
     dataset: str
+    dataset_id: str | None = None
     created_at: str
     updated_at: str
     turns: list[Turn] = []
